@@ -8,20 +8,39 @@
 
 #include "KICachePolicy.h"
 
-namespace KamaCaches 
+namespace KamaCache
 {
 
+// 前向声明
+template<typename Key, typename Value> class KLruCache;
+
 template<typename Key, typename Value>
-struct RNode
+class LruNode 
 {
-    Key                                key;
-    Value                              value;
-    size_t                             time; // 访问次数(arc中才用到,lru算法中可忽略他)
-    std::shared_ptr<RNode<Key, Value>> pre;
-    std::shared_ptr<RNode<Key, Value>> next;
-    RNode(Key key, Value value)
-        : key(key), value(value), time(1), pre(nullptr), next(nullptr)
+private:
+    Key key_;
+    Value value_;
+    size_t accessCount_;  // 访问次数
+    std::shared_ptr<LruNode<Key, Value>> prev_;  
+    std::shared_ptr<LruNode<Key, Value>> next_;
+
+public:
+    LruNode(Key key, Value value)
+        : key_(key)
+        , value_(value)
+        , accessCount_(1) 
+        , prev_(nullptr)
+        , next_(nullptr)
     {}
+
+    // 提供必要的访问器
+    Key getKey() const { return key_; }
+    Value getValue() const { return value_; }
+    void setValue(const Value& value) { value_ = value; }
+    size_t getAccessCount() const { return accessCount_; }
+    void incrementAccessCount() { ++accessCount_; }
+
+    friend class KLruCache<Key, Value>;
 };
 
 
@@ -29,18 +48,14 @@ template<typename Key, typename Value>
 class KLruCache : public KICachePolicy<Key, Value>
 {
 public:
-    using Node = RNode<Key, Value>;
-    using spNode = std::shared_ptr<Node>;
-    using NodeMap = std::unordered_map<Key, spNode>;
+    using LruNodeType = LruNode<Key, Value>;
+    using NodePtr = std::shared_ptr<LruNodeType>;
+    using NodeMap = std::unordered_map<Key, NodePtr>;
 
     KLruCache(int capacity)
         : capacity_(capacity)
     {
-        // 创建首尾虚拟节点
-        DummyHead_ = std::make_shared<Node>(Key(), Value());
-        DummyTail_ = std::make_shared<Node>(Key(), Value());
-        DummyHead_->next = DummyTail_;
-        DummyTail_->pre = DummyHead_;
+        initializeList();
     }
 
     ~KLruCache() override = default;
@@ -52,25 +67,25 @@ public:
             return;
     
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = keyToNode_.find(key);
-        if (it != keyToNode_.end())
+        auto it = nodeMap_.find(key);
+        if (it != nodeMap_.end())
         {
             // 如果在当前容器中,则更新value,并调用get方法，代表该数据刚被访问
-            it->second->value = value;
-            getInternal(it->second, value);
+            updateExistingNode(it->second, value);
             return ;
         }
 
-        putInternal(key, value);
+        addNewNode(key, value);
     }
 
     bool get(Key key, Value& value) override
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = keyToNode_.find(key);
-        if (it != keyToNode_.end())
+        auto it = nodeMap_.find(key);
+        if (it != nodeMap_.end())
         {
-            getInternal(it->second, value);
+            moveToMostRecent(it->second);
+            value = it->second->getValue();
             return true;
         }
         return false;
@@ -78,85 +93,89 @@ public:
 
     Value get(Key key) override
     {
-        Value value;
-        memset(&value, 0, sizeof(value));
+        Value value{};
+        // memset(&value, 0, sizeof(value));   // memset 是按字节设置内存的，对于复杂类型（如 string）使用 memset 可能会破坏对象的内部结构
         get(key, value);
         return value;
     }
 
     // 删除指定元素
     void remove(Key key) 
-    { 
-        auto it = keyToNode_.find(key);
-        if (it != keyToNode_.end())
+    {   
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = nodeMap_.find(key);
+        if (it != nodeMap_.end())
         {
-            removeFromList(it->second);
-            keyToNode_.erase(it);
+            removeNode(it->second);
+            nodeMap_.erase(it);
         }
     }
 
 private:
-    void putInternal(Key key, Value value);
-    void getInternal(spNode& node, Value& value);
-
-    // 移除最久未被访问的数据
-    void kickOut()
+    void initializeList()
     {
-        spNode data = DummyHead_->next;
-        removeFromList(data);
-        keyToNode_.erase(data->key);
+        // 创建首尾虚拟节点
+        dummyHead_ = std::make_shared<LruNodeType>(Key(), Value());
+        dummyTail_ = std::make_shared<LruNodeType>(Key(), Value());
+        dummyHead_->next_ = dummyTail_;
+        dummyTail_->prev_ = dummyHead_;
     }
 
-    // 将数据结点从链表中移除
-    void removeFromList(spNode& node)
+    void updateExistingNode(NodePtr node, const Value& value) 
     {
-        node->pre->next = node->next;
-        node->next->pre = node->pre;
-        node->pre = nullptr;
-        node->next = nullptr;
+        node->setValue(value);
+        moveToMostRecent(node);
     }
 
-    // 将数据结点插到链表尾部
-    void insertToList(spNode& node)
+    void addNewNode(const Key& key, const Value& value) 
     {
-        node->next = DummyTail_;
-        node->pre = DummyTail_->pre;
-        DummyTail_->pre->next = node;
-        DummyTail_->pre = node;
+       if (nodeMap_.size() >= capacity_) 
+       {
+           evictLeastRecent();
+       }
+
+       NodePtr newNode = std::make_shared<LruNodeType>(key, value);
+       insertNode(newNode);
+       nodeMap_[key] = newNode;
+    }
+
+    // 将该节点移动到最新的位置
+    void moveToMostRecent(NodePtr node) 
+    {
+        removeNode(node);
+        insertNode(node);
+    }
+
+    void removeNode(NodePtr node) 
+    {
+        node->prev_->next_ = node->next_;
+        node->next_->prev_ = node->prev_;
+    }
+
+    // 从尾部插入结点
+    void insertNode(NodePtr node) 
+    {
+        node->next_ = dummyTail_;
+        node->prev_ = dummyTail_->prev_;
+        dummyTail_->prev_->next_ = node;
+        dummyTail_->prev_ = node;
+    }
+
+    // 驱逐最近最少访问
+    void evictLeastRecent() 
+    {
+        NodePtr leastRecent = dummyHead_->next_;
+        removeNode(leastRecent);
+        nodeMap_.erase(leastRecent->getKey());
     }
 
 private:
     int          capacity_; // 缓存容量
-    NodeMap      keyToNode_; // key到结点的映射
+    NodeMap      nodeMap_; // key -> Node 
     std::mutex   mutex_;
-    spNode       DummyHead_; // 虚拟头结点
-    spNode       DummyTail_;
+    NodePtr       dummyHead_; // 虚拟头结点
+    NodePtr       dummyTail_;
 };
-
-template<typename Key, typename Value>
-void KLruCache<Key,Value>::getInternal(spNode& node, Value& value)
-{
-    // 将其从链表中原位置移除，接着从链表尾部插入(因为链表从头到尾的顺序是访问顺序，最久未被访问的放在头部)
-    removeFromList(node);
-    insertToList(node);
-    value = node->value;
-}
-
-template<typename Key, typename Value>
-void KLruCache<Key,Value>::putInternal(Key key, Value value)
-{
-    // 判断容器是否满
-    if (keyToNode_.size() >= capacity_)
-    {
-        // 移除最久未被访问的数据
-        kickOut();
-    }
-
-    // 将数据结点插入容器
-    spNode data = std::make_shared<Node>(key, value);
-    insertToList(data);
-    keyToNode_[key] = data;
-}
 
 // LRU优化：Lru-k版本。 通过继承的方式进行再优化
 template<typename Key, typename Value>
@@ -256,4 +275,4 @@ private:
     std::vector<std::unique_ptr<KLruCache<Key, Value>>> lruSliceCaches_; // 切片LRU缓存
 };
 
-} // namespace KamaCaches
+} // namespace KamaCache
