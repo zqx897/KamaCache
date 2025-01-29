@@ -6,6 +6,7 @@
 #include <random>
 #include <algorithm>
 
+#include "KICachePolicy.h"
 #include "KLfuCache.h"
 #include "KLruCache.h"
 #include "KArcCache/KArcCache.h"
