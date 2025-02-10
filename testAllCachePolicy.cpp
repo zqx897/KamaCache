@@ -40,9 +40,9 @@ void printResults(const std::string& testName, int capacity,
 void testHotDataAccess() {
     std::cout << "\n=== 测试场景1：热点数据访问测试 ===" << std::endl;
     
-    const int CAPACITY = 5;             
-    const int OPERATIONS = 100000;      
-    const int HOT_KEYS = 3;            
+    const int CAPACITY = 50;  // 增加缓存容量
+    const int OPERATIONS = 500000;  // 增加操作次数
+    const int HOT_KEYS = 20;   // 增加热点数据的数量
     const int COLD_KEYS = 5000;        
     
     KamaCache::KLruCache<int, std::string> lru(CAPACITY);
@@ -60,9 +60,9 @@ void testHotDataAccess() {
     for (int i = 0; i < caches.size(); ++i) {
         for (int op = 0; op < OPERATIONS; ++op) {
             int key;
-            if (op % 100 < 40) {  // 40%热点数据
+            if (op % 100 < 70) {  // 70%热点数据
                 key = gen() % HOT_KEYS;
-            } else {  // 60%冷数据
+            } else {  // 30%冷数据
                 key = HOT_KEYS + (gen() % COLD_KEYS);
             }
             std::string value = "value" + std::to_string(key);
@@ -70,11 +70,11 @@ void testHotDataAccess() {
         }
         
         // 然后进行随机get操作
-        for (int get_op = 0; get_op < OPERATIONS/2; ++get_op) {
+        for (int get_op = 0; get_op < OPERATIONS; ++get_op) {
             int key;
-            if (get_op % 100 < 40) {  // 40%概率访问热点
+            if (get_op % 100 < 70) {  // 70%概率访问热点
                 key = gen() % HOT_KEYS;
-            } else {  // 60%概率访问冷数据
+            } else {  // 30%概率访问冷数据
                 key = HOT_KEYS + (gen() % COLD_KEYS);
             }
             
@@ -92,9 +92,9 @@ void testHotDataAccess() {
 void testLoopPattern() {
     std::cout << "\n=== 测试场景2：循环扫描测试 ===" << std::endl;
     
-    const int CAPACITY = 3;            
-    const int LOOP_SIZE = 200;         
-    const int OPERATIONS = 50000;      
+    const int CAPACITY = 50;  // 增加缓存容量
+    const int LOOP_SIZE = 500;         
+    const int OPERATIONS = 200000;  // 增加操作次数
     
     KamaCache::KLruCache<int, std::string> lru(CAPACITY);
     KamaCache::KLfuCache<int, std::string> lfu(CAPACITY);
@@ -109,7 +109,7 @@ void testLoopPattern() {
 
     // 先填充数据
     for (int i = 0; i < caches.size(); ++i) {
-        for (int key = 0; key < LOOP_SIZE * 2; ++key) {
+        for (int key = 0; key < LOOP_SIZE; ++key) {  // 只填充 LOOP_SIZE 的数据
             std::string value = "loop" + std::to_string(key);
             caches[i]->put(key, value);
         }
@@ -118,12 +118,12 @@ void testLoopPattern() {
         int current_pos = 0;
         for (int op = 0; op < OPERATIONS; ++op) {
             int key;
-            if (op % 100 < 70) {  // 70%顺序扫描
+            if (op % 100 < 60) {  // 60%顺序扫描
                 key = current_pos;
                 current_pos = (current_pos + 1) % LOOP_SIZE;
-            } else if (op % 100 < 85) {  // 15%随机跳跃
+            } else if (op % 100 < 90) {  // 30%随机跳跃
                 key = gen() % LOOP_SIZE;
-            } else {  // 15%访问范围外数据
+            } else {  // 10%访问范围外数据
                 key = LOOP_SIZE + (gen() % LOOP_SIZE);
             }
             
@@ -202,8 +202,6 @@ void testWorkloadShift() {
 
     printResults("工作负载剧烈变化测试", CAPACITY, get_operations, hits);
 }
-
-
 
 int main() {
     testHotDataAccess();
