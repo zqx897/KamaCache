@@ -18,9 +18,11 @@ template<typename Key, typename Value>
 class LruNode 
 {
 private:
-    Key key_;
-    Value value_;
-    size_t accessCount_;  // 访问次数
+    // 节点存储四要素：
+    Key key_;               // 缓存键标识
+    Value value_;           // 缓存值数据
+    size_t accessCount_;    // 访问次数（为Lru-K预留）
+    // 双向链表指针（使用智能指针自动管理内存）
     std::shared_ptr<LruNode<Key, Value>> prev_;  
     std::shared_ptr<LruNode<Key, Value>> next_;
 
@@ -66,7 +68,7 @@ public:
         if (capacity_ <= 0)
             return;
     
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);   // 线程安全锁
         auto it = nodeMap_.find(key);
         if (it != nodeMap_.end())
         {
@@ -74,7 +76,7 @@ public:
             updateExistingNode(it->second, value);
             return ;
         }
-
+            // 若容量满了的话没有淘汰？
         addNewNode(key, value);
     }
 
@@ -84,7 +86,7 @@ public:
         auto it = nodeMap_.find(key);
         if (it != nodeMap_.end())
         {
-            moveToMostRecent(it->second);
+            moveToMostRecent(it->second);   // 链表节点重排
             value = it->second->getValue();
             return true;
         }
